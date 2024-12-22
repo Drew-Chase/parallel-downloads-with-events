@@ -1,4 +1,3 @@
-#![allow(unused)]
 use log::info;
 use std::cmp::min;
 use std::error::Error;
@@ -16,6 +15,9 @@ struct DownloadCallbackProgress {
     total_bytes: u64,
 }
 
+const DOWNLOAD_URL: &str = "https://www.rust-lang.org/static/images/rust-logo-blk.svg"; // Sample URL for testing
+const URL_BATCH_SIZE: usize = 1000; // Number of URLs in a batch
+
 fn main() -> Result<(), Box<dyn Error>> {
     // Record the start time for benchmarking purposes.
     let current_time = std::time::SystemTime::now();
@@ -24,21 +26,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::env::set_var("RUST_LOG", "info");
     env_logger::init();
 
-    // List of URLs to download.
-    let mut urls = vec![];
-    for _ in 0..1000 {
-        // Repeatedly add the same URL to simulate a batch of download tasks.
-        urls.push("https://www.rust-lang.org/static/images/rust-logo-blk.svg");
-    }
+    // Create a list of URLs to download, each URL being the same in this example.
+    let urls = vec![DOWNLOAD_URL; URL_BATCH_SIZE];
 
-    // Start downloading the batch of URLs.
+    // Start downloading all URLs in batches, and handle any errors that may occur.
     download_batch(urls)?;
 
-    // Record the end time and calculate the elapsed duration.
+    // Record the end time and calculate the total elapsed duration.
     let end_time = std::time::SystemTime::now();
     let elapsed = end_time.duration_since(current_time).unwrap();
 
-    // Log the time taken to complete all downloads.
+    // Log the total time taken to download the files.
     info!("Elapsed time: {:?}", elapsed);
 
     Ok(())
@@ -55,55 +53,55 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// * `Ok(())` if all downloads succeed.
 /// * `Err` if any error occurs.
 fn download_batch(urls: Vec<&str>) -> Result<(), Box<dyn Error>> {
-    // Convert all URLs to `String` to ensure owned values.
+    // Convert all URLs into `String` to ensure each is an owned value.
     let urls: Vec<String> = urls.into_iter().map(|url| url.to_string()).collect();
 
-    // Limit the number of threads to either 50 or the number of URLs, whichever is smaller.
+    // Define the maximum number of threads to use, which is the smaller of 50 or the total number of URLs.
     let thread_count = min(50, urls.len());
 
-    // Preallocate space for thread handles to avoid resizing during execution.
+    // Preallocate space for thread handles to avoid dynamic resizing later.
     let mut handles = Vec::with_capacity(thread_count);
 
-    // Shared counter for file naming, protected by a mutex for thread safety.
-    let mut index = Arc::new(Mutex::new(0));
+    // Shared counter for assigning unique file names, protected by a `Mutex` to ensure thread safety.
+    let index = Arc::new(Mutex::new(0));
 
-    // Split the URLs into chunks to process in parallel.
+    // Split the list of URLs into smaller chunks, where each chunk will be handled in parallel.
     let chunks = urls.chunks(thread_count);
 
     for chunk in chunks {
-        // Convert the current chunk to a vector for threaded operations.
+        // Convert the current chunk into a `Vec` to support threaded operations.
         let chunk = chunk.to_vec();
 
         for url in chunk {
-            // Clone the shared index for use in the new thread.
+            // Clone the shared index so each thread can safely access and increment it.
             let index = Arc::clone(&index);
 
-            // Spawn a new thread to handle the file download.
+            // Spawn a new thread to perform the file download.
             let handle = std::thread::spawn(move || {
-                // Lock the shared index and increment it.
+                // Acquire a lock on the shared index and increment it to generate a unique file name.
                 let mut index = index.lock().unwrap();
                 *index += 1;
                 let index = *index;
 
-                // Construct the file path for the downloaded file.
+                // Build the file path where the downloaded file will be saved.
                 download_file(
                     url.clone(),
                     PathBuf::from_str(format!("./test-{}.svg", index).as_str()).unwrap(),
-                    |progress| {}, // No-op callback provided here.
+                    |_progress| {}, // Provide a no-op progress callback for simplicity.
                 )
-                    .unwrap(); // Unwrap is used for simplicity, though error handling could be improved.
+                    .unwrap(); // Handle any errors from the download with an unwrap (not ideal for production code).
             });
 
-            // Store the thread handle for later joining.
+            // Store the thread handle so it can be joined later.
             handles.push(handle);
         }
 
-        // Wait for all threads of the current chunk to finish.
+        // Wait for all threads created in this chunk to complete before processing the next chunk.
         for handle in handles.drain(..) {
             handle.join().unwrap();
         }
 
-        // Clear the handles vector for the next batch of threads.
+        // Clear the thread handles vector to prepare for the next batch of downloads.
         handles.clear();
     }
 
@@ -127,31 +125,31 @@ fn download_file(
     path: impl AsRef<Path>,
     callback: impl Fn(&DownloadCallbackProgress) + 'static + Send + Sync,
 ) -> Result<(), Box<dyn Error>> {
-    // Initialize a blocking HTTP client.
+    // Initialize a blocking HTTP client. This client is used to fetch the file.
     let client = reqwest::blocking::Client::new();
 
-    // Perform the GET request for the specified URL.
+    // Perform an HTTP GET request to the given URL and store the server's response.
     let mut response = client.get(url.as_ref()).send()?;
 
-    // Create or overwrite the file at the specified path.
+    // Create or overwrite a local file at the specified path for saving the downloaded content.
     let mut file = std::fs::File::create(path)?;
 
-    // Keep track of downloaded bytes.
+    // Initialize a variable to track the number of bytes successfully downloaded.
     let mut bytes_downloaded = 0;
 
-    // Get the total size of the file, defaulting to 0 if unavailable.
+    // Retrieve the total size of the file from the server response, defaulting to 0 if unavailable.
     let total_bytes = response.content_length().unwrap_or(0);
 
-    // Buffer for storing chunks of the response body.
+    // Allocate a buffer to temporarily store chunks of the downloaded content.
     let mut buffer = Vec::new();
 
     // Copy the response body into the buffer.
     response.copy_to(&mut buffer)?;
 
-    // Write the data from the buffer into the file, updating the progress.
+    // Write the data from the buffer into the local file, and update the bytes_downloaded count.
     bytes_downloaded += file.write(&buffer)? as u64;
 
-    // Call the callback function with progress details.
+    // Invoke the callback function to report the download progress.
     callback(&DownloadCallbackProgress {
         bytes_downloaded,
         total_bytes,
